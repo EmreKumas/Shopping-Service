@@ -38,6 +38,9 @@ pthread_t *seller_ids;
 
 int main(){
 
+    //Before beginning we need to make sure that the program create different random numbers on every sequence.
+    srand((unsigned int) time(0));
+
     //Reading the input file.
     read_file();
 
@@ -148,6 +151,17 @@ void create_threads(){
 
     int i, thread_control;
 
+    //Creating customer threads.
+    for(i = 0; i < number_of_customers; i++){
+
+        thread_control = pthread_create(&customer_ids[i], NULL, &customer_thread, (void *) i);
+
+        if(thread_control){
+            fprintf(stderr, "Error: return code from creating customer thread is %d\n", thread_control);
+            exit(-1);
+        }
+    }
+
     //Creating seller threads.
     for(i = 0; i < number_of_sellers; i++){
 
@@ -155,17 +169,6 @@ void create_threads(){
 
         if(thread_control){
             fprintf(stderr, "Error: return code from creating seller thread is %d\n", thread_control);
-            exit(-1);
-        }
-    }
-
-    //Creating customer threads.
-    for(i = 0; i < number_of_customers; i++){
-
-        thread_control = pthread_create(&customer_ids[i], NULL, &customer_thread, NULL);
-
-        if(thread_control){
-            fprintf(stderr, "Error: return code from creating customer thread is %d\n", thread_control);
             exit(-1);
         }
     }
@@ -196,15 +199,60 @@ void join_threads(){
     }
 }
 
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunused-parameter"
 void *customer_thread(void *argument){
+
+    int i, operation_type;
+    int customer_no = (int) argument;
+
+    //We need a random number for the number of operations.
+    //A customer can make at most 3 operations following each other. Before doing anymore operation the customer needs to wait for the others.
+    int num_of_operations = (int) (random() % 3) + 1;
+
+    //Now, we should check if the limit has been reached for the number of operations allowed for the day.
+    if(customer_information[customer_no][1] <= 0){
+
+        //If this is the case, this customer cannot do anything else until the current day finishes. So we need to suspend it.
+        customer_no = (int) argument;  ///********
+
+    }else if(customer_information[customer_no][1] < num_of_operations){
+
+        //If the random number we generated is bigger than the number of operations the customer can do for the rest of the day,
+        //we need to set the random number to the number of operations the customer can do.
+        num_of_operations = customer_information[customer_no][1];
+    }
+
+    for(i = 0; i < num_of_operations; i++){
+
+        //For each operation, we need another random number for the type of the operation. We have 3 different operations.
+        operation_type = (int) random() % 3;
+
+        if(operation_type == 0){ // BUY PRODUCT
+
+
+
+        }else if(operation_type == 1){ // RESERVE PRODUCT
+
+
+
+        }else{ // CANCEL RESERVATION
+
+
+
+        }
+    }
+
+
+
+
+
+
 
 
     pthread_exit(NULL);
 }
 
-
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-parameter"
 void *seller_thread(void *argument){
 
 
