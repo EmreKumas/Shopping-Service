@@ -4,6 +4,8 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <unistd.h>
+#include <stdbool.h>
+#include <errno.h>
 
 //////////////////////////////////////////////////////// - PROTOTYPES OF FUNCTIONS
 //<editor-fold desc="PROTOTYPES OF FUNCTIONS">
@@ -23,6 +25,24 @@ void clean_up();
 //</editor-fold>
 //////////////////////////////////////////////////////// - GLOBAL VARIABLES
 
+//Customer struct
+typedef struct{
+
+    int operation_type;
+    int product_type;
+    int product_amount;
+
+}customer_struct;
+
+//Reserve struct
+typedef struct{
+
+    int customer_no;
+    int product_type;
+    int product_amount;
+
+}reserve_struct;
+
 int number_of_customers;
 int number_of_sellers;
 int number_of_simulation_days;
@@ -31,8 +51,15 @@ int number_of_products;
 int *num_of_instances_of_product;
 int **customer_information;
 
+bool *customer_status;
+
 pthread_t *customer_ids;
 pthread_t *seller_ids;
+
+pthread_mutex_t *seller_mutex;
+
+customer_struct *customers;
+reserve_struct *reserve = NULL;
 
 //////////////////////////////////////////////////////// - MAIN METHOD
 
@@ -74,6 +101,11 @@ void read_file(){
         printf("\"input.txt\" does not exist. Please make sure it exists before starting this program.\n");
         exit(1);
     }
+
+    customers = malloc(number_of_customers * sizeof(customer_struct));
+    customer_status = malloc(number_of_customers * sizeof(bool));
+
+    for(int i = 0; i < number_of_customers; i++) customer_status[i] = true;
 }
 
 void read_from_file(FILE *fp){
@@ -172,6 +204,14 @@ void create_threads(){
             exit(-1);
         }
     }
+
+    seller_mutex = malloc(number_of_sellers * sizeof(pthread_mutex_t));
+
+    //Creating mutexes.
+    for(i = 0; i < number_of_sellers; i++){
+
+        pthread_mutex_init(&seller_mutex[i], NULL);
+    }
 }
 
 void join_threads(){
@@ -202,51 +242,69 @@ void join_threads(){
 void *customer_thread(void *argument){
 
     int i, operation_type;
+    int product_type, product_amount;
+    int status = 0;
     int customer_no = (int) argument;
 
-    //We need a random number for the number of operations.
-    //A customer can make at most 3 operations following each other. Before doing anymore operation the customer needs to wait for the others.
-    int num_of_operations = (int) (random() % 3) + 1;
+    //While the simulation days is not over...
+    while(true){
 
-    //Now, we should check if the limit has been reached for the number of operations allowed for the day.
-    if(customer_information[customer_no][1] <= 0){
+        if(customer_status[customer_no] == false){
 
-        //If this is the case, this customer cannot do anything else until the current day finishes. So we need to suspend it.
-        customer_no = (int) argument;  ///********
-
-    }else if(customer_information[customer_no][1] < num_of_operations){
-
-        //If the random number we generated is bigger than the number of operations the customer can do for the rest of the day,
-        //we need to set the random number to the number of operations the customer can do.
-        num_of_operations = customer_information[customer_no][1];
-    }
-
-    for(i = 0; i < num_of_operations; i++){
+            //If this is the case, this customer cannot do anything else until the current day finishes. So we need to suspend it.
+            ///********
+        }
 
         //For each operation, we need another random number for the type of the operation. We have 3 different operations.
         operation_type = (int) random() % 3;
 
         if(operation_type == 0){ // BUY PRODUCT
 
+            product_type = (int) (random() % number_of_products) + 1;
+            product_amount = (int) (random() % 5) + 1;
 
+            customers[customer_no].operation_type = 0;
+            customers[customer_no].product_type = product_type;
+            customers[customer_no].product_amount = product_amount;
 
         }else if(operation_type == 1){ // RESERVE PRODUCT
 
+            product_type = (int) (random() % number_of_products) + 1;
+            product_amount = (int) (random() % 5) + 1;
 
+            customers[customer_no].operation_type = 1;
+            customers[customer_no].product_type = product_type;
+            customers[customer_no].product_amount = product_amount;
 
         }else{ // CANCEL RESERVATION
 
-
-
+            customers[customer_no].operation_type = 2;
         }
+
+        //Customer needs to find an empty seller.
+        while(true){
+
+            for(i = 0; i < number_of_sellers; i++){
+
+                status = pthread_mutex_trylock(&seller_mutex[i]);
+
+                //If we able to lock anything which means we found an empty seller, we will exit the loop.
+                if(status != EBUSY)
+                    break;
+            }
+
+            if(status != EBUSY)
+                break;
+        }
+
+        //We need to keep wait the customer until its job finishes.
+        pthread_mutex_lock(&seller_mutex[i]);
+
+        //Now, the job has finished so we need to release the mutex.
+        pthread_mutex_unlock(&seller_mutex[i]);
+
+        break;
     }
-
-
-
-
-
-
-
 
     pthread_exit(NULL);
 }
@@ -256,9 +314,20 @@ void *customer_thread(void *argument){
 void *seller_thread(void *argument){
 
 
+
     pthread_exit(NULL);
 }
 #pragma clang diagnostic pop
+
+//</editor-fold>
+
+//////////////////////////////////////////////////////// - OTHER FUNCTIONS
+//<editor-fold desc="OTHER FUNCTIONS">
+
+void cancel_reservation(int customer_no){
+
+
+}
 
 //</editor-fold>
 //////////////////////////////////////////////////////// - PRINTING AND CLEANING-UP
@@ -281,5 +350,10 @@ void clean_up(){
 
     free(customer_ids);
     free(seller_ids);
+
+    free(seller_mutex);
+
+    free(customers);
+    free(customer_status);
 }
 //</editor-fold>
