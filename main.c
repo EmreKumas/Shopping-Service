@@ -53,6 +53,7 @@ int **customer_information;
 int *seller_to_customer;
 
 bool *customer_status;
+bool *current_day_initialized;
 
 pthread_t *customer_ids;
 pthread_t *seller_ids;
@@ -83,6 +84,7 @@ void *seller_thread(void *argument);
 
 transaction_struct *create_transaction(int customer_to_serve, int simulation_day, bool is_successful);
 reserve_struct *create_reserve(int customer_to_serve);
+
 void add_to_transaction_list(transaction_struct *newTransaction);
 void add_to_reserve_list(reserve_struct *newReserve);
 bool cancel_reservation(int customer_to_serve);
@@ -140,7 +142,20 @@ void read_file(){
         exit(1);
     }
 
-    for(int i = 0; i < number_of_customers; i++) customer_status[i] = true;
+    //Also we need to reset the values of customer_status and seller_to_customer;
+    if(customer_status != NULL && seller_to_customer != NULL){
+        for(int i = 0; i < number_of_customers; i++) customer_status[i] = true;
+        for(int i = 0; i < number_of_sellers; i++) seller_to_customer[i] = -1;
+    }
+
+    //We will create space for current_day_initialized if it is not already allocated.
+    if(current_day_initialized == NULL){
+        current_day_initialized = malloc(number_of_simulation_days * sizeof(bool));
+
+        //Also, we need to set all values of it to zero except the first day since we already initialized it.
+        current_day_initialized[0] = true;
+        for(int i = 1; i < number_of_simulation_days; i++) current_day_initialized[i] = false;
+    }
 }
 
 void read_from_file(FILE *fp){
@@ -171,20 +186,21 @@ void read_from_file(FILE *fp){
                     case 3:
                         number_of_products = (int) strtol(token, NULL, 10);
                         break;
+                    default:break;
                 }
             }else if(loop_count < 4 + number_of_products){
 
                 //Now, we will loop by product count.
-                //Also, just for the first time we need to allocate some space.
-                if(loop_count == 4)
+                //Also, just for the first time we need to allocate some space if it is not already allocated.
+                if(loop_count == 4 && num_of_instances_of_product == NULL)
                     num_of_instances_of_product = malloc(number_of_products * sizeof(int));
 
                 num_of_instances_of_product[loop_count - 4] = (int) strtol(input, NULL, 10);
             }else{
 
                 //And lastly, we need to fill in customers information.
-                //Firstly, lets allocate some space for it.
-                if(loop_count == 4 + number_of_products){
+                //Firstly, lets allocate some space for it if it is not already allocated.
+                if(loop_count == 4 + number_of_products && customer_information == NULL){
                     customer_information = malloc(number_of_customers * sizeof(int *));
 
                     for(i = 0; i < number_of_customers; i++)
@@ -218,6 +234,17 @@ void create_threads(){
 
     int i, thread_control;
 
+    //Creating mutexes.
+    seller_mutex = malloc(number_of_sellers * sizeof(pthread_mutex_t));
+
+    for(i = 0; i < number_of_sellers; i++){
+
+        pthread_mutex_init(&seller_mutex[i], NULL);
+    }
+
+    pthread_mutex_init(&transaction_mutex, NULL);
+    pthread_mutex_init(&reserve_mutex, NULL);
+
     //Creating customer threads.
     for(i = 0; i < number_of_customers; i++){
 
@@ -239,17 +266,6 @@ void create_threads(){
             exit(-1);
         }
     }
-
-    seller_mutex = malloc(number_of_sellers * sizeof(pthread_mutex_t));
-
-    //Creating mutexes.
-    for(i = 0; i < number_of_sellers; i++){
-
-        pthread_mutex_init(&seller_mutex[i], NULL);
-    }
-
-    pthread_mutex_init(&transaction_mutex, NULL);
-    pthread_mutex_init(&reserve_mutex, NULL);
 }
 
 void join_threads(){
@@ -292,33 +308,43 @@ void manage_threads(){
     while(current_simulation_day < number_of_simulation_days){
         sleep(10);
         current_simulation_day++;
+        printf("Day %d ended.\n",current_simulation_day);
 
         //After the current day finishes, we need to reset all information.
-        free(num_of_instances_of_product);
+        //To be able to do that, we need to wait for all customers and sellers to finish their current job.
+        for(int i = 0; i < number_of_sellers; i++){
+            while(seller_to_customer[i] != -1);
+        }
 
-        for(int i = 0; i < number_of_customers; i++)
-            free(customer_information[i]);
-
+        //Now, all jobs has finished, we can reset all values back to original.
         read_file();
+
+        //Also, we will set the current days flag to true if the simulation has not ended.
+        if(current_simulation_day != number_of_simulation_days) current_day_initialized[current_simulation_day] = true;
     }
 }
 
 void *customer_thread(void *argument){
 
-    int i, operation_type;
-    int product_type, product_amount;
-    int status = 0;
+    int i = 0;
+    int operation_type, product_type, product_amount;
+    int status = -1;
     int customer_no = (int)(intptr_t) argument;
 
     //While the simulation days is not over...
     while(current_simulation_day != number_of_simulation_days){
 
+        //Before doing anything, we should check if the current day has been initialized.
+        while(current_day_initialized[current_simulation_day] == false);
+
+        int current_day = current_simulation_day;
+
         if(customer_status[customer_no] == false){
 
             //If this is the case, this customer cannot do anything else until the current day finishes. So we need to suspend it.
-            int current_day = current_simulation_day;
-
             while(current_day == current_simulation_day);
+
+            goto end_of_customer;
         }
 
         //For each operation, we need another random number for the type of the operation. We have 3 different operations.
@@ -347,8 +373,8 @@ void *customer_thread(void *argument){
             customers[customer_no].operation_type = 2;
         }
 
-        //Customer needs to find an empty seller.
-        while(true){
+        //Customer needs to find an empty seller as long as we're on the same day.
+        while(current_day == current_simulation_day){
 
             for(i = 0; i < number_of_sellers; i++){
 
@@ -363,14 +389,19 @@ void *customer_thread(void *argument){
                 break;
         }
 
+        //We need to reset the loop if we're not on the same day.
+        if(current_day != current_simulation_day){
+            if(status != EBUSY && status != -1) pthread_mutex_unlock(&seller_mutex[i]);
+            continue;
+        }
+
         //Now, we need a way to communicate with the seller. So we set the arrays value.
         seller_to_customer[i] = customer_no;
 
-        //We need to keep wait the customer until its job finishes.
-        pthread_mutex_lock(&seller_mutex[i]);
+        //We need to keep the customer waiting until its job finishes.
+        while(seller_to_customer[i] == customer_no);
 
-        //Now, the job has finished so we need to release the mutex.
-        pthread_mutex_unlock(&seller_mutex[i]);
+        end_of_customer:;
     }
 
     pthread_exit(NULL);
@@ -384,12 +415,9 @@ void *seller_thread(void *argument){
     //While the simulation days is not over...
     while(current_simulation_day != number_of_simulation_days){
 
-        //The seller waits for a customer to lock its mutex...
-        while(pthread_mutex_trylock(&seller_mutex[seller_no]) != EBUSY){
-
-            //Means mutex is not locked. We will release it.
-            pthread_mutex_unlock(&seller_mutex[seller_no]);
-        }
+        //The seller waits for a customer to lock its mutex until the end of its execution.
+        while(seller_to_customer[seller_no] == -1)
+            if(current_simulation_day == number_of_simulation_days) goto end_of_seller;
 
         //Now, the seller can do a job.
         customer_to_serve = seller_to_customer[seller_no];
@@ -399,7 +427,7 @@ void *seller_thread(void *argument){
         if(customer_information[customer_to_serve][1] <= 0){
 
             //Means the customer has no right to do its job. After adding the transaction we need to terminate.
-            add_to_transaction_list(create_transaction(customer_to_serve, 1, false));
+            add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, false));
 
             customer_status[customer_to_serve] = false;
 
@@ -411,12 +439,12 @@ void *seller_thread(void *argument){
                 if(num_of_instances_of_product[customers[customer_to_serve].product_type] < customers[customer_to_serve].product_amount){
 
                     //Means wanted amount do not exist. Unsuccessful transaction.
-                    add_to_transaction_list(create_transaction(customer_to_serve, 1, false));
+                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, false));
 
                 }else{
 
                     //We can make this transaction successfully.
-                    add_to_transaction_list(create_transaction(customer_to_serve, 1, true));
+                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, true));
 
                     //Lastly, we need to decrease the amount from product amount.
                     pthread_mutex_lock(&product_mutex[customers[customer_to_serve].product_type]);
@@ -430,17 +458,17 @@ void *seller_thread(void *argument){
                 if(num_of_instances_of_product[customers[customer_to_serve].product_type] < customers[customer_to_serve].product_amount){
 
                     //Means wanted amount do not exist. Unsuccessful transaction.
-                    add_to_transaction_list(create_transaction(customer_to_serve, 1, false));
+                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, false));
 
                 }else if(customer_information[customer_to_serve][2] < customers[customer_to_serve].product_amount){
 
                     //Secondly, we need to check if customers reserve amount is enough. If this is the case, unsuccessful transaction.
-                    add_to_transaction_list(create_transaction(customer_to_serve, 1, false));
+                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, false));
 
                 }else{
 
                     //We can make this transaction successfully.
-                    add_to_transaction_list(create_transaction(customer_to_serve, 1, true));
+                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, true));
 
                     //We need to decrease the amount from product amount.
                     pthread_mutex_lock(&product_mutex[customers[customer_to_serve].product_type]);
@@ -459,15 +487,20 @@ void *seller_thread(void *argument){
                 bool is_successful = cancel_reservation(customer_to_serve);
 
                 //We need to make the transaction.
-                add_to_transaction_list(create_transaction(customer_to_serve, 1, is_successful));
+                add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, is_successful));
             }
 
             //We need to decrease from customers allowed operation count.
             customer_information[customer_to_serve][1]--;
         }
 
+        //Since seller finished its job, we need to reset its status.
+        seller_to_customer[seller_no] = -1;
+
         //We will release the mutex.
         pthread_mutex_unlock(&seller_mutex[seller_no]);
+
+        end_of_seller:;
     }
 
     pthread_exit(NULL);
@@ -485,6 +518,10 @@ void create_necessary_variables(){
     seller_to_customer = malloc(number_of_sellers * sizeof(int));
 
     product_mutex = malloc(number_of_products * sizeof(pthread_mutex_t));
+
+    //Also we need to reset the values of customer_status and seller_to_customer;
+    for(int i = 0; i < number_of_customers; i++) customer_status[i] = true;
+    for(int i = 0; i < number_of_sellers; i++) seller_to_customer[i] = -1;
 }
 
 transaction_struct *create_transaction(int customer_to_serve, int simulation_day, bool is_successful){
@@ -564,7 +601,7 @@ bool cancel_reservation(int customer_to_serve){
         reserve_struct *current = reserve;
         reserve_struct *pre_current = NULL;
 
-        while(current->next != NULL){
+        while(current != NULL){
 
             if(current->customer_no == customer_to_serve){
 
@@ -572,6 +609,8 @@ bool cancel_reservation(int customer_to_serve){
                 delete_reservation(current, pre_current);
 
                 returnValue = true;
+                break;
+
             }else{
                 pre_current = current;
                 current = current->next;
@@ -627,6 +666,7 @@ void clean_up(){
     free(customer_status);
     free(seller_to_customer);
     free(product_mutex);
+    free(current_day_initialized);
 
     clean_linkedlists();
 }
