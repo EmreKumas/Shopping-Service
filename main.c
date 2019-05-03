@@ -33,6 +33,7 @@ typedef struct reserve_struct_type{
 typedef struct transaction_struct_type{
 
     int customer_no;
+    int seller_no;
     int operation_type;
     int product_amount;
     int simulation_day;
@@ -51,6 +52,7 @@ int current_simulation_day;
 int *num_of_instances_of_product;
 int **customer_information;
 int *seller_to_customer;
+int **product_sales;
 
 bool *customer_status;
 bool *current_day_initialized;
@@ -82,17 +84,18 @@ void join_threads();
 void *customer_thread(void *argument);
 void *seller_thread(void *argument);
 
-transaction_struct *create_transaction(int customer_to_serve, int simulation_day, bool is_successful);
+transaction_struct *create_transaction(int customer_to_serve, int simulation_day, bool is_successful, int seller_no);
 reserve_struct *create_reserve(int customer_to_serve);
 
 void add_to_transaction_list(transaction_struct *newTransaction);
 void add_to_reserve_list(reserve_struct *newReserve);
-bool cancel_reservation(int customer_to_serve);
+int cancel_reservation(int customer_to_serve);
 void delete_reservation(reserve_struct *to_delete, reserve_struct *previous);
 
 void print_summary();
 void clean_up();
-void clean_linkedlists();
+void clean_reserve_list();
+void clean_transaction_list();
 
 //</editor-fold>
 //////////////////////////////////////////////////////// - MAIN METHOD
@@ -306,7 +309,7 @@ void manage_threads(){
 
     //We created all threads. Since 10 seconds correspond to one simulation day, we need to suspend the main thread for 10 seconds.
     while(current_simulation_day < number_of_simulation_days){
-        sleep(10);
+        sleep(1);
         current_simulation_day++;
         printf("Day %d ended.\n",current_simulation_day);
 
@@ -318,6 +321,9 @@ void manage_threads(){
 
         //Now, all jobs has finished, we can reset all values back to original.
         read_file();
+
+        //We need to clear the reserve list, as well.
+        clean_reserve_list();
 
         //Also, we will set the current days flag to true if the simulation has not ended.
         if(current_simulation_day != number_of_simulation_days) current_day_initialized[current_simulation_day] = true;
@@ -352,7 +358,7 @@ void *customer_thread(void *argument){
 
         if(operation_type == 0){ // BUY PRODUCT
 
-            product_type = (int) (random() % number_of_products) + 1;
+            product_type = (int) random() % number_of_products;
             product_amount = (int) (random() % 5) + 1;
 
             customers[customer_no].operation_type = 0;
@@ -361,7 +367,7 @@ void *customer_thread(void *argument){
 
         }else if(operation_type == 1){ // RESERVE PRODUCT
 
-            product_type = (int) (random() % number_of_products) + 1;
+            product_type = (int) random() % number_of_products;
             product_amount = (int) (random() % 5) + 1;
 
             customers[customer_no].operation_type = 1;
@@ -426,9 +432,7 @@ void *seller_thread(void *argument){
         //Firstly, we need to check if that customer has any operation right.
         if(customer_information[customer_to_serve][1] <= 0){
 
-            //Means the customer has no right to do its job. After adding the transaction we need to terminate.
-            add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, false));
-
+            //Means the customer has no right to do its job.
             customer_status[customer_to_serve] = false;
 
         }else{
@@ -439,16 +443,17 @@ void *seller_thread(void *argument){
                 if(num_of_instances_of_product[customers[customer_to_serve].product_type] < customers[customer_to_serve].product_amount){
 
                     //Means wanted amount do not exist. Unsuccessful transaction.
-                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, false));
+                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, false, seller_no));
 
                 }else{
 
                     //We can make this transaction successfully.
-                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, true));
+                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, true, seller_no));
 
                     //Lastly, we need to decrease the amount from product amount.
                     pthread_mutex_lock(&product_mutex[customers[customer_to_serve].product_type]);
                     num_of_instances_of_product[customers[customer_to_serve].product_type] -= customers[customer_to_serve].product_amount;
+                    product_sales[customers[customer_to_serve].product_type][0] += customers[customer_to_serve].product_amount;
                     pthread_mutex_unlock(&product_mutex[customers[customer_to_serve].product_type]);
                 }
 
@@ -458,21 +463,22 @@ void *seller_thread(void *argument){
                 if(num_of_instances_of_product[customers[customer_to_serve].product_type] < customers[customer_to_serve].product_amount){
 
                     //Means wanted amount do not exist. Unsuccessful transaction.
-                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, false));
+                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, false, seller_no));
 
                 }else if(customer_information[customer_to_serve][2] < customers[customer_to_serve].product_amount){
 
                     //Secondly, we need to check if customers reserve amount is enough. If this is the case, unsuccessful transaction.
-                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, false));
+                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, false, seller_no));
 
                 }else{
 
                     //We can make this transaction successfully.
-                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, true));
+                    add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, true, seller_no));
 
                     //We need to decrease the amount from product amount.
                     pthread_mutex_lock(&product_mutex[customers[customer_to_serve].product_type]);
                     num_of_instances_of_product[customers[customer_to_serve].product_type] -= customers[customer_to_serve].product_amount;
+                    product_sales[customers[customer_to_serve].product_type][1] += customers[customer_to_serve].product_amount;
                     pthread_mutex_unlock(&product_mutex[customers[customer_to_serve].product_type]);
 
                     //Also, we need to add this to the reserve list.
@@ -484,10 +490,19 @@ void *seller_thread(void *argument){
 
             }else{ // CANCEL RESERVATION
 
-                bool is_successful = cancel_reservation(customer_to_serve);
+                int product_amount = cancel_reservation(customer_to_serve);
+                bool is_successful;
+
+                if(product_amount == -1) is_successful = false;
+                else is_successful = true;
 
                 //We need to make the transaction.
-                add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, is_successful));
+                add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, is_successful, seller_no));
+
+                pthread_mutex_lock(&product_mutex[customers[customer_to_serve].product_type]);
+                if(is_successful == true)
+                    product_sales[customers[customer_to_serve].product_type][2] += product_amount;
+                pthread_mutex_unlock(&product_mutex[customers[customer_to_serve].product_type]);
             }
 
             //We need to decrease from customers allowed operation count.
@@ -519,15 +534,19 @@ void create_necessary_variables(){
 
     product_mutex = malloc(number_of_products * sizeof(pthread_mutex_t));
 
+    product_sales = malloc(number_of_products * sizeof(int *));
+    for(int i = 0; i < number_of_products; i++) product_sales[i] = calloc(3, sizeof(int));
+
     //Also we need to reset the values of customer_status and seller_to_customer;
     for(int i = 0; i < number_of_customers; i++) customer_status[i] = true;
     for(int i = 0; i < number_of_sellers; i++) seller_to_customer[i] = -1;
 }
 
-transaction_struct *create_transaction(int customer_to_serve, int simulation_day, bool is_successful){
+transaction_struct *create_transaction(int customer_to_serve, int simulation_day, bool is_successful, int seller_no){
 
     transaction_struct *newTransaction = malloc(sizeof(transaction_struct));
     newTransaction->customer_no = customer_to_serve;
+    newTransaction->seller_no = seller_no;
     newTransaction->operation_type = customers[customer_to_serve].operation_type;
     newTransaction->product_amount = customers[customer_to_serve].product_amount;
     newTransaction->simulation_day = simulation_day;
@@ -590,9 +609,9 @@ void add_to_reserve_list(reserve_struct *newReserve){
     pthread_mutex_unlock(&reserve_mutex);
 }
 
-bool cancel_reservation(int customer_to_serve){
+int cancel_reservation(int customer_to_serve){
 
-    bool returnValue = false;
+    int returnValue = -1;
 
     //First we need to check if any reserve exists.
     if(reserve != NULL){
@@ -605,10 +624,13 @@ bool cancel_reservation(int customer_to_serve){
 
             if(current->customer_no == customer_to_serve){
 
+                returnValue = current->product_amount;
+
+                customers[customer_to_serve].product_type = current->product_type;
+
                 //Delete the reservation.
                 delete_reservation(current, pre_current);
 
-                returnValue = true;
                 break;
 
             }else{
@@ -645,8 +667,63 @@ void delete_reservation(reserve_struct *to_delete, reserve_struct *previous){
 
 void print_summary(){
 
+    char operation_name[16];
 
+    //We need to create a file.
+    FILE *fp = fopen("Output.txt", "w");
 
+    fprintf(fp, "%s\t%s\t%s\t%s\t%s\n", "Customer_ID", "Seller_ID", "Operation", "Simulation_Day", "Is Successful");
+    fprintf(fp, "-------------------------------------------------------------------------\n");
+
+    transaction_struct *current = transaction;
+
+    while(current != NULL){
+
+        if(current->operation_type == 0) strcpy(operation_name, "BUY");
+        else if(current->operation_type == 1) strcpy(operation_name, "RESERVE");
+        else strcpy(operation_name, "CANCEL");
+
+        fprintf(fp, "%d\t\t%d\t\t%s\t\t\t%d\t", (current->customer_no + 1), (current->seller_no + 1), operation_name, (current->simulation_day + 1));
+        fprintf(fp, "%s\n", current->is_successful ? "true" : "false");
+
+        current = current->next;
+    }
+
+    ////////////////////////////////////////////////////////
+
+    fprintf(fp, "\n\nNUMBER OF TRANSACTION\n\n");
+
+    current = transaction;
+    int transaction_of_customer[number_of_customers];
+    int transaction_of_seller[number_of_sellers];
+
+    for(int i = 0; i < number_of_customers; i++) transaction_of_customer[i] = 0;
+    for(int i = 0; i < number_of_sellers; i++) transaction_of_seller[i] = 0;
+
+    while(current != NULL){
+
+        transaction_of_customer[current->customer_no]++;
+        transaction_of_seller[current->seller_no]++;
+
+        current = current->next;
+    }
+
+    for(int i = 0; i < number_of_customers; i++) fprintf(fp, "Customer #%d - %d\n", (i + 1), transaction_of_customer[i]);
+    fprintf(fp, "\n");
+    for(int i = 0; i < number_of_sellers; i++) fprintf(fp, "Seller #%d - %d\n", (i + 1), transaction_of_seller[i]);
+
+    ////////////////////////////////////////////////////////
+
+    fprintf(fp, "\n\nPRODUCT INFORMATION\n\n");
+
+    for(int i = 0; i < number_of_products; i++){
+
+        fprintf(fp, "Product #%d\t%d\t%d\t%d\n", (i + 1), product_sales[i][0], product_sales[i][1], product_sales[i][2]);
+    }
+
+    ////////////////////////////////////////////////////////
+
+    fclose(fp);
 }
 
 void clean_up(){
@@ -655,10 +732,12 @@ void clean_up(){
 
     free(num_of_instances_of_product);
 
-    for(i = 0; i < number_of_customers; i++)
-        free(customer_information[i]);
-
+    for(i = 0; i < number_of_customers; i++) free(customer_information[i]);
     free(customer_information);
+
+    for(i = 0; i < number_of_products; i++) free(product_sales[i]);
+    free(product_sales);
+
     free(customer_ids);
     free(seller_ids);
     free(seller_mutex);
@@ -668,16 +747,14 @@ void clean_up(){
     free(product_mutex);
     free(current_day_initialized);
 
-    clean_linkedlists();
+    clean_reserve_list();
+    clean_transaction_list();
 }
 
-void clean_linkedlists(){
+void clean_reserve_list(){
 
     reserve_struct *reserve_current = reserve;
     reserve_struct *reserve_to_delete;
-
-    transaction_struct *transaction_current = transaction;
-    transaction_struct *transaction_to_delete;
 
     while(reserve_current != NULL){
         reserve_to_delete = reserve_current;
@@ -686,6 +763,14 @@ void clean_linkedlists(){
         free(reserve_to_delete);
     }
 
+    reserve = NULL;
+}
+
+void clean_transaction_list(){
+
+    transaction_struct *transaction_current = transaction;
+    transaction_struct *transaction_to_delete;
+
     while(transaction_current != NULL){
         transaction_to_delete = transaction_current;
         transaction_current = transaction_current->next;
@@ -693,5 +778,4 @@ void clean_linkedlists(){
         free(transaction_to_delete);
     }
 }
-
 //</editor-fold>
