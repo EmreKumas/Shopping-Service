@@ -500,8 +500,10 @@ void *seller_thread(void *argument){
                 add_to_transaction_list(create_transaction(customer_to_serve, current_simulation_day, is_successful, seller_no));
 
                 pthread_mutex_lock(&product_mutex[customers[customer_to_serve].product_type]);
-                if(is_successful == true)
+                if(is_successful == true){
                     product_sales[customers[customer_to_serve].product_type][2] += product_amount;
+		    num_of_instances_of_product[customers[customer_to_serve].product_type] += product_amount;
+		}
                 pthread_mutex_unlock(&product_mutex[customers[customer_to_serve].product_type]);
             }
 
